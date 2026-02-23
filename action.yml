@@ -1,18 +1,38 @@
-name: Setup Agentflow
-description: Install and configure agentflow for use in GitHub Actions CI/CD
+name: Agentflow
+description: Generate code with agentflow and optionally open a PR when generated files change
 author: OmniAura
 
 branding:
-  icon: terminal
+  icon: zap
   color: blue
 
 inputs:
   version:
-    description: "Agentflow version to install (e.g. '0.5.3', 'latest'). Defaults to latest."
+    description: "Agentflow version to install (e.g. '0.5.3', 'latest')"
     required: false
     default: latest
+  directory:
+    description: "Directory to run af gen on. Defaults to repo root."
+    required: false
+    default: "."
+  command:
+    description: "Custom command to run instead of 'af gen prompts <directory>'. Overrides directory input."
+    required: false
+    default: ""
+  create-pr:
+    description: "Open a PR if generated files changed. Set to 'false' to just fail on diff instead."
+    required: false
+    default: "true"
+  pr-title:
+    description: "Title for the auto-generated PR"
+    required: false
+    default: "chore: update agentflow generated files"
+  pr-branch:
+    description: "Branch name for the auto-generated PR"
+    required: false
+    default: "agentflow/update-generated"
   go-version:
-    description: "Go version to use. Only needed if Go is not already installed. Defaults to 'stable'."
+    description: "Go version to use if Go is not already installed"
     required: false
     default: stable
 
@@ -23,11 +43,17 @@ outputs:
   tool-mode:
     description: "How agentflow was installed: 'go-tool' or 'go-install'"
     value: ${{ steps.install.outputs.tool_mode }}
+  changed:
+    description: "Whether generated files changed: 'true' or 'false'"
+    value: ${{ steps.diff.outputs.changed }}
+  pr-url:
+    description: "URL of the created PR (empty if no PR was created)"
+    value: ${{ steps.pr.outputs.pr_url }}
 
 runs:
   using: composite
   steps:
-    - name: Setup Go (if not present)
+    - name: Setup Go
       uses: actions/setup-go@v5
       with:
         go-version: ${{ inputs.go-version }}
@@ -42,15 +68,13 @@ runs:
         # Check if go.mod exists and has agentflow as a tool dependency
         if [ -f "go.mod" ] && grep -q 'github.com/omniaura/agentflow' go.mod; then
           echo "Found agentflow in go.mod, using go tool mode"
-
-          # Ensure the tool dependency is synced
           go mod download github.com/omniaura/agentflow
 
-          # Verify it works as a tool
           if go tool af --version > /dev/null 2>&1; then
             INSTALLED_VERSION=$(go tool af --version 2>&1 | head -1)
             echo "tool_mode=go-tool" >> "$GITHUB_OUTPUT"
             echo "version=${INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "af_cmd=go tool af" >> "$GITHUB_OUTPUT"
             echo "Agentflow installed via go tool: ${INSTALLED_VERSION}"
             exit 0
           fi
@@ -67,14 +91,73 @@ runs:
         INSTALLED_VERSION=$(af --version 2>&1 | head -1)
         echo "tool_mode=go-install" >> "$GITHUB_OUTPUT"
         echo "version=${INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
+        echo "af_cmd=af" >> "$GITHUB_OUTPUT"
         echo "Agentflow installed via go install: ${INSTALLED_VERSION}"
 
-    - name: Verify installation
+    - name: Run agentflow
+      id: generate
       shell: bash
       run: |
-        TOOL_MODE="${{ steps.install.outputs.tool_mode }}"
-        if [ "$TOOL_MODE" = "go-tool" ]; then
-          go tool af --version
+        AF_CMD="${{ steps.install.outputs.af_cmd }}"
+        CUSTOM_CMD="${{ inputs.command }}"
+        DIRECTORY="${{ inputs.directory }}"
+
+        if [ -n "$CUSTOM_CMD" ]; then
+          echo "Running custom command: $CUSTOM_CMD"
+          eval "$CUSTOM_CMD"
         else
-          af --version
+          echo "Running: $AF_CMD gen prompts $DIRECTORY"
+          $AF_CMD gen prompts "$DIRECTORY"
+        fi
+
+    - name: Check for changes
+      id: diff
+      shell: bash
+      run: |
+        if git diff --quiet; then
+          echo "No changes to generated files"
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "Generated files have changed:"
+          git diff --stat
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Handle changes
+      id: pr
+      if: steps.diff.outputs.changed == 'true'
+      shell: bash
+      env:
+        CREATE_PR: ${{ inputs.create-pr }}
+        PR_TITLE: ${{ inputs.pr-title }}
+        PR_BRANCH: ${{ inputs.pr-branch }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        if [ "$CREATE_PR" != "true" ]; then
+          echo "::error::Generated files are out of date. Run agentflow locally and commit the changes."
+          exit 1
+        fi
+
+        # Configure git
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+        # Create or update branch
+        git checkout -B "$PR_BRANCH"
+        git add -A
+        git commit -m "$PR_TITLE"
+        git push -f origin "$PR_BRANCH"
+
+        # Create PR if one doesn't exist
+        EXISTING_PR=$(gh pr list --head "$PR_BRANCH" --json url --jq '.[0].url' 2>/dev/null || true)
+        if [ -n "$EXISTING_PR" ]; then
+          echo "PR already exists: $EXISTING_PR"
+          echo "pr_url=${EXISTING_PR}" >> "$GITHUB_OUTPUT"
+        else
+          PR_URL=$(gh pr create \
+            --title "$PR_TITLE" \
+            --body "Automated PR — agentflow detected changes in generated files." \
+            --head "$PR_BRANCH")
+          echo "Created PR: $PR_URL"
+          echo "pr_url=${PR_URL}" >> "$GITHUB_OUTPUT"
         fi

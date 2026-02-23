@@ -7,20 +7,20 @@ on:
     branches: [main]
 
 jobs:
-  test-go-install:
+  test-install-go-install:
+    name: Test install (go install)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Test action (go install mode)
+      - name: Test action with create-pr disabled
         uses: ./
         with:
-          version: latest
+          create-pr: 'false'
+          command: 'af --version'
 
-      - name: Verify af works
-        run: af --version
-
-  test-go-tool:
+  test-install-go-tool:
+    name: Test install (go tool)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,17 +35,17 @@ jobs:
           go mod init test-project
           go get -tool github.com/omniaura/agentflow/cmd/af@latest
 
-      - name: Test action (go tool mode)
+      - name: Test action detects go tool
         uses: ./
         with:
-          version: latest
+          create-pr: 'false'
+          command: 'go tool af --version'
 
-  actionlint:
+  validate:
+    name: Validate action.yml
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check action.yml is valid
-        run: |
-          # Basic YAML validation
-          python3 -c "import yaml; yaml.safe_load(open('action.yml'))"
+      - name: Check action.yml is valid YAML
+        run: python3 -c "import yaml; yaml.safe_load(open('action.yml'))"
