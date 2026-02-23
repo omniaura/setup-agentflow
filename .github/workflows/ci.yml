@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  test-go-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test action (go install mode)
+        uses: ./
+        with:
+          version: latest
+
+      - name: Verify af works
+        run: af --version
+
+  test-go-tool:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Create test go.mod with agentflow tool dep
+        run: |
+          mkdir -p /tmp/test-project && cd /tmp/test-project
+          go mod init test-project
+          go get -tool github.com/omniaura/agentflow/cmd/af@latest
+
+      - name: Test action (go tool mode)
+        uses: ./
+        with:
+          version: latest
+
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check action.yml is valid
+        run: |
+          # Basic YAML validation
+          python3 -c "import yaml; yaml.safe_load(open('action.yml'))"

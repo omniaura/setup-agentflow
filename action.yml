@@ -1,0 +1,80 @@
+name: Setup Agentflow
+description: Install and configure agentflow for use in GitHub Actions CI/CD
+author: OmniAura
+
+branding:
+  icon: terminal
+  color: blue
+
+inputs:
+  version:
+    description: "Agentflow version to install (e.g. '0.5.3', 'latest'). Defaults to latest."
+    required: false
+    default: latest
+  go-version:
+    description: "Go version to use. Only needed if Go is not already installed. Defaults to 'stable'."
+    required: false
+    default: stable
+
+outputs:
+  version:
+    description: "The installed agentflow version"
+    value: ${{ steps.install.outputs.version }}
+  tool-mode:
+    description: "How agentflow was installed: 'go-tool' or 'go-install'"
+    value: ${{ steps.install.outputs.tool_mode }}
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Go (if not present)
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ inputs.go-version }}
+        cache: false
+
+    - name: Install agentflow
+      id: install
+      shell: bash
+      run: |
+        VERSION="${{ inputs.version }}"
+
+        # Check if go.mod exists and has agentflow as a tool dependency
+        if [ -f "go.mod" ] && grep -q 'github.com/omniaura/agentflow' go.mod; then
+          echo "Found agentflow in go.mod, using go tool mode"
+
+          # Ensure the tool dependency is synced
+          go mod download github.com/omniaura/agentflow
+
+          # Verify it works as a tool
+          if go tool af --version > /dev/null 2>&1; then
+            INSTALLED_VERSION=$(go tool af --version 2>&1 | head -1)
+            echo "tool_mode=go-tool" >> "$GITHUB_OUTPUT"
+            echo "version=${INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "Agentflow installed via go tool: ${INSTALLED_VERSION}"
+            exit 0
+          fi
+        fi
+
+        # Fall back to go install
+        echo "Installing agentflow via go install"
+        if [ "$VERSION" = "latest" ]; then
+          go install github.com/omniaura/agentflow/cmd/af@latest
+        else
+          go install "github.com/omniaura/agentflow/cmd/af@v${VERSION#v}"
+        fi
+
+        INSTALLED_VERSION=$(af --version 2>&1 | head -1)
+        echo "tool_mode=go-install" >> "$GITHUB_OUTPUT"
+        echo "version=${INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
+        echo "Agentflow installed via go install: ${INSTALLED_VERSION}"
+
+    - name: Verify installation
+      shell: bash
+      run: |
+        TOOL_MODE="${{ steps.install.outputs.tool_mode }}"
+        if [ "$TOOL_MODE" = "go-tool" ]; then
+          go tool af --version
+        else
+          af --version
+        fi
